@@ -250,9 +250,10 @@ def steam_ratio_model(pl, data, fraction):
 
     MODEL = f"Model_PL{pl}_Steam_Ratio"
     # **** Load Exist Model **** #
-    steam_model_exist = load_model(MODEL, verbose=False)
+    steam_model_exist = load_model(f'pl_models/{MODEL}', verbose=False)
     # **** Predict Unseen data **** #
-    predictions = predict_model(steam_model_exist, data=data_unseen)
+    predictions = predict_model(
+        steam_model_exist, data=data_unseen, verbose=False)
     # **** Get exist model score **** #
     exist_model_score = check_metric(
         predictions.steam_kg_ton, predictions.Label, "R2")
@@ -284,54 +285,107 @@ def steam_ratio_model(pl, data, fraction):
         session_id=123,
         verbose=False
     )
-    # **** Compare Models and get top r2 score from train dataset **** #
-    steam_model = compare_models(verbose=False)
-    # **** Predict model from test dataset **** #
-    predict_model(steam_model, verbose=False)
-    # **** Get model r2 score **** #
-    results = pull()
-    steam_model_r2 = results.R2[0]
-    # **** Tuning hyper parameter and create model from train dataset **** #
-    steam_model_tuned = tune_model(steam_model, verbose=False)
-    # **** Predict tuned model from test dataset **** #
-    predict_model(steam_model_tuned, verbose=False)
-    # **** Get tuned model r2 score **** #
-    results = pull()
-    tuned_steam_model_r2 = results.R2[0]
-    # **** Select best model score **** #
-    if tuned_steam_model_r2 > steam_model_r2:
-        steam_model = steam_model_tuned
-    # **** Create final model by train test dataset **** #
-    steam_model_final = finalize_model(steam_model)
-    # **** Get Model Name **** #
-    results = pull()
-    algorithm_name = results.Model[0]
-    # **** Predict final model from unseen dataset **** #
-    predictions = predict_model(steam_model_final, data=data_unseen)
-    # **** Accuracy Score **** #
-    new_model_score = check_metric(
-        predictions.steam_kg_ton, predictions.Label, "R2")
+    # **** Create Model and compare select top 3 accuracy score (r2) by train dataset **** #
+    top3 = compare_models(n_select=3, verbose=False)
 
-    # **** Load log models **** #
+    algorithm_name = []
+    accuracy = []
+    accuracy_tuned = []
+    model_list = []
+    model_tuned_list = []
+
+    # **** Tune hyper parameter and calculate accuracy score by test dataset **** #
+    for i in range(3):
+        # **** Predict test dataset **** #
+        predict_model(top3[i], verbose=False)
+        # **** Get Result **** #
+        results = pull()
+        # **** Correct Algorithm Name **** #
+        algorithm_name.append(results.loc[0, "Model"])
+        # **** Correct Model Accuracy **** #
+        accuracy.append(results.loc[0, "R2"])
+        # **** Correct Model to list **** #
+        model_list.append(top3[i])
+
+        # **** Tune hyper parameter **** #
+        model_tuned = tune_model(top3[i], verbose=False)
+        # **** Predict test dataset **** #
+        predict_model(model_tuned, verbose=False)
+        # **** Get Result **** #
+        results = pull()
+        # **** Correct Tuned Model Accuracy **** #
+        accuracy_tuned.append(results.loc[0, "R2"])
+        # **** Correct Tuned Model to list **** #
+        model_tuned_list.append(model_tuned)
+
+    # **** Save log Model Details **** #
     log = pd.read_excel("pl_models/model_log.xlsx")
-    index = log[log.Model_Name == MODEL].index
-
-    if new_model_score > exist_model_score:
-        # **** Save Model **** #
-        save_model(steam_model_final, MODEL, verbose=False)
-        # **** Assing model algorithm name **** #
-        log.loc[index, "Algorithm"] = algorithm_name
-        # **** Assing model accuracy score **** #
-        log.loc[index, "Accuracy"] = new_model_score
-        # **** Assing model create date **** #
-        log.loc[index, "Version"] = pd.Timestamp.today().strftime("%Y-%m-%d")
-        # **** Set accuracy score **** #
-        accuracy_score = new_model_score
-    else:
-        log.loc[index, "Accuracy"] = exist_model_score
+    log_data = []
+    # **** Get Day Now **** #
+    version = pd.Timestamp.today().strftime("%d-%m-%Y")
+    prediction = 'Steam Ratio'
+    # **** Create details **** #
+    for i in range(3):
+        log_data.append(
+            {
+                "Action_Date": version,
+                'Prediction': prediction,
+                "Rank": i + 1,
+                "Model": algorithm_name[i],
+                "Accuracy": accuracy[i],
+                "Tuned_Accuracy": accuracy_tuned[i],
+            }
+        )
+    # **** Insert Details to excel **** #
+    log = pd.concat([log, pd.DataFrame(log_data)], ignore_index=True)
     log.to_excel("pl_models/model_log.xlsx", index=False)
 
-    return algorithm_name, accuracy_score
+    # **** Compare accuracy score **** #
+    score = accuracy + accuracy_tuned
+    # **** Select top 1 score **** #
+    max_index = score.index(max(score))
+    # **** Get top score Model **** #
+    if max_index < 3:
+        steam_model = model_list[max_index]
+    else:
+        steam_model = model_tuned_list[(max_index - 3)]
+
+    # **** Finalize Model **** #
+    model_final = finalize_model(steam_model)
+    # **** Predict test dataset **** #
+    predict_model(model_final, verbose=False)
+    # **** Get Result **** #
+    results = pull()
+    # **** Get Algorithm Name **** #
+    algorithm = results.loc[0, "Model"]
+    # **** Get Final Model Accuracy **** #
+    model_accuracy = results.loc[0, "R2"]
+
+    # **** Predict unseen dataset **** #
+    predictions = predict_model(model_final, data=data_unseen, verbose=False)
+    # **** Get Accuracy Score **** #
+    new_accuracy_score = check_metric(
+        predictions.steam_kg_ton, predictions.Label, "R2")
+
+    # **** Hall of Fame **** #
+    hof = pd.read_excel("pl_models/hall_of_fame.xlsx")
+    index = hof[hof.Model_Name == MODEL].index
+    # CASE: NEW MODEL SCORE > EXIST MODEL SCORE
+    if new_accuracy_score > accuracy_score:
+        # **** Save new model **** #
+        save_model(model_final, f"pl_models/{MODEL}", verbose=False)
+        # **** Save details to excel **** #
+        hof.loc[index, "Algorithm"] = algorithm
+        hof.loc[index, "Model_Accuracy"] = model_accuracy
+        hof.loc[index, "Practical_Accuracy"] = new_accuracy_score
+        hof.loc[index, "Version"] = version
+        accuracy_score = new_accuracy_score
+    else:
+        hof.loc[index, "Practical_Accuracy"] = accuracy_score
+
+    hof.to_excel(f"pl_models/hall_of_fame.xlsx", index=False)
+
+    return algorithm, accuracy_score
 
 
 def amp_motor_model(pl, data, fraction):
@@ -367,9 +421,10 @@ def amp_motor_model(pl, data, fraction):
     MODEL = f"Model_PL{pl}_Amp_Motor"
 
     # **** Load Exist Model **** #
-    amp_model_exist = load_model(MODEL, verbose=False)
+    amp_model_exist = load_model(f'pl_models/{MODEL}', verbose=False)
     # **** Predict Unseen data **** #
-    predictions = predict_model(amp_model_exist, data=data_unseen)
+    predictions = predict_model(
+        amp_model_exist, data=data_unseen, verbose=False)
     # **** Get exist model score **** #
     exist_model_score = check_metric(
         predictions.amp_motor, predictions.Label, "R2")
@@ -401,54 +456,107 @@ def amp_motor_model(pl, data, fraction):
         verbose=False
     )
 
-    # **** Compare Models and get top r2 score from train dataset **** #
-    amp_model = compare_models(verbose=False)
-    # **** Predict model from test dataset **** #
-    predict_model(amp_model, verbose=False)
-    # **** Get model r2 score **** #
-    results = pull()
-    amp_model_r2 = results.R2[0]
-    # **** Tuning hyper parameter and create model from train dataset **** #
-    amp_model_tuned = tune_model(amp_model, verbose=False)
-    # **** Predict tuned model from test dataset **** #
-    predict_model(amp_model_tuned, verbose=False)
-    # **** Get tuned model r2 score **** #
-    results = pull()
-    tuned_amp_model_r2 = results.R2[0]
-    # **** Select best model score **** #
-    if tuned_amp_model_r2 > amp_model_r2:
-        amp_model = amp_model_tuned
-    # **** Create final model by train test dataset **** #
-    amp_model_final = finalize_model(amp_model)
-    # **** Get Model Name **** #
-    results = pull()
-    algorithm_name = results.Model[0]
-    # **** Predict final model from unseen dataset **** #
-    predictions = predict_model(amp_model_final, data=data_unseen)
-    # **** Accuracy Score **** #
-    new_model_score = check_metric(
-        predictions.amp_motor, predictions.Label, "R2")
+    # **** Create Model and compare select top 3 accuracy score (r2) by train dataset **** #
+    top3 = compare_models(n_select=3, verbose=False)
 
-    # **** Load log models **** #
+    algorithm_name = []
+    accuracy = []
+    accuracy_tuned = []
+    model_list = []
+    model_tuned_list = []
+
+    # **** Tune hyper parameter and calculate accuracy score by test dataset **** #
+    for i in range(3):
+        # **** Predict test dataset **** #
+        predict_model(top3[i], verbose=False)
+        # **** Get Result **** #
+        results = pull()
+        # **** Correct Algorithm Name **** #
+        algorithm_name.append(results.loc[0, "Model"])
+        # **** Correct Model Accuracy **** #
+        accuracy.append(results.loc[0, "R2"])
+        # **** Correct Model to list **** #
+        model_list.append(top3[i])
+
+        # **** Tune hyper parameter **** #
+        model_tuned = tune_model(top3[i], verbose=False)
+        # **** Predict test dataset **** #
+        predict_model(model_tuned, verbose=False)
+        # **** Get Result **** #
+        results = pull()
+        # **** Correct Tuned Model Accuracy **** #
+        accuracy_tuned.append(results.loc[0, "R2"])
+        # **** Correct Tuned Model to list **** #
+        model_tuned_list.append(model_tuned)
+
+    # **** Save log Model Details **** #
     log = pd.read_excel("pl_models/model_log.xlsx")
-    index = log[log.Model_Name == MODEL].index
-
-    if new_model_score > exist_model_score:
-        # **** Save Model **** #
-        save_model(amp_model_final, MODEL, verbose=False)
-        # **** Assing model algorithm name **** #
-        log.loc[index, "Algorithm"] = algorithm_name
-        # **** Assing model accuracy score **** #
-        log.loc[index, "Accuracy"] = new_model_score
-        # **** Assing model create date **** #
-        log.loc[index, "Version"] = pd.Timestamp.today().strftime("%Y-%m-%d")
-        # **** Set accuracy score **** #
-        accuracy_score = new_model_score
-    else:
-        log.loc[index, "Accuracy"] = exist_model_score
+    log_data = []
+    # **** Get Day Now **** #
+    version = pd.Timestamp.today().strftime("%d-%m-%Y")
+    prediction = 'Max Amp Motor'
+    # **** Create details **** #
+    for i in range(3):
+        log_data.append(
+            {
+                "Action_Date": version,
+                'Prediction': prediction,
+                "Rank": i + 1,
+                "Model": algorithm_name[i],
+                "Accuracy": accuracy[i],
+                "Tuned_Accuracy": accuracy_tuned[i],
+            }
+        )
+    # **** Insert Details to excel **** #
+    log = pd.concat([log, pd.DataFrame(log_data)], ignore_index=True)
     log.to_excel("pl_models/model_log.xlsx", index=False)
 
-    return algorithm_name, accuracy_score
+    # **** Compare accuracy score **** #
+    score = accuracy + accuracy_tuned
+    # **** Select top 1 score **** #
+    max_index = score.index(max(score))
+    # **** Get top score Model **** #
+    if max_index < 3:
+        amp_model = model_list[max_index]
+    else:
+        amp_model = model_tuned_list[(max_index - 3)]
+
+    # **** Finalize Model **** #
+    model_final = finalize_model(amp_model)
+    # **** Predict test dataset **** #
+    predict_model(model_final, verbose=False)
+    # **** Get Result **** #
+    results = pull()
+    # **** Get Algorithm Name **** #
+    algorithm = results.loc[0, "Model"]
+    # **** Get Final Model Accuracy **** #
+    model_accuracy = results.loc[0, "R2"]
+
+    # **** Predict unseen dataset **** #
+    predictions = predict_model(model_final, data=data_unseen, verbose=False)
+    # **** Get Accuracy Score **** #
+    new_accuracy_score = check_metric(
+        predictions.amp_motor, predictions.Label, "R2")
+
+    # **** Hall of Fame **** #
+    hof = pd.read_excel("pl_models/hall_of_fame.xlsx")
+    index = hof[hof.Model_Name == MODEL].index
+    # CASE: NEW MODEL SCORE > EXIST MODEL SCORE
+    if new_accuracy_score > accuracy_score:
+        # **** Save new model **** #
+        save_model(model_final, f"pl_models/{MODEL}", verbose=False)
+        # **** Save details to excel **** #
+        hof.loc[index, "Algorithm"] = algorithm
+        hof.loc[index, "Model_Accuracy"] = model_accuracy
+        hof.loc[index, "Practical_Accuracy"] = new_accuracy_score
+        hof.loc[index, "Version"] = version
+        accuracy_score = new_accuracy_score
+    else:
+        hof.loc[index, "Practical_Accuracy"] = accuracy_score
+
+    hof.to_excel(f"pl_models/hall_of_fame.xlsx", index=False)
+
+    return algorithm, accuracy_score
 
 
 def create_models():
@@ -499,16 +607,12 @@ def prediction(pl):
     # **** Create Job detail **** #
     job = pd.DataFrame([job_api])
 
-
-
-
-
-
     # CASE: JOB ACTIVE
     if job.loc[0, 'formular_date'] != '0':
 
         # **** Format formular date **** #
-        job.formular_date = [datetime.strptime(t, "%d/%m/%y") for t in job.formular_date]
+        job.formular_date = [datetime.strptime(
+            t, "%d/%m/%y") for t in job.formular_date]
         # **** Get formular month **** #
         job["formular_month"] = [i.month for i in job.formular_date]
 
@@ -521,8 +625,9 @@ def prediction(pl):
         df = pd.read_excel(f'pl_cleaned/cleaned_pl{job.loc[0,"pl_name"]}.xlsx')
         df.formular_code = df.formular_code.astype(str)
         # **** Filter by parameter **** #
-        exist_code = df[(df.formular_code == job_code) & (df.formular_month.isin(job_month))].copy()
-      
+        exist_code = df[(df.formular_code == job_code) & (
+            df.formular_month.isin(job_month))].copy()
+
         # CASE: EXIST SKU
         if len(exist_code):
             data = exist_code
@@ -530,24 +635,23 @@ def prediction(pl):
         else:
             # **** Find formular group of job code **** #
             group = pd.read_excel("pl_cleaned/FeedGroup.xlsx")
-            job_group = group[group.formular_code == job_code]['formular_group'].values[0]
+            get_group = group[group.formular_code ==
+                              job_code]['formular_group']
+
             # CASE: EXIST SKU IN FORMULAR GROUP
-            if len(job_group):
+            if len(get_group):
+                job_group = get_group.values[0]
                 # **** Get fpqf from master **** #
                 fpqf_list = list(set(df.fpqf))
                 # **** Find nearest fpqf of job and master **** #
                 near_list = [abs(f-job_fpqf) for f in fpqf_list]
                 fpqf = fpqf_list[near_list.index(min(near_list))]
                 # **** Filter by group and fpqf **** #
-                data = df[(df.formular_group == job_group) & (df.fpqf ==fpqf )& (df.formular_month.isin(job_month))].copy()
+                data = df[(df.formular_group == job_group) & (
+                    df.fpqf == fpqf) & (df.formular_month.isin(job_month))].copy()
             # CASE: NEW SKU IN FORMULAR GROUP
             else:
                 data = df
-                
-        
-
-
-
 
         # **** Create parameter to return API **** #
         parameter = {}
@@ -562,7 +666,7 @@ def prediction(pl):
 
         # **** Create dataset to predict **** #
         plc = job[["pl_name", "formular_code", "fpqf", "density", "fat_target_percent",
-                    "molass_target_percent", "bar_steam", "formular_month", ]].copy()
+                   "molass_target_percent", "bar_steam", "formular_month", ]].copy()
         # **** Get formular group **** #
         plc["formular_group"] = data.formular_group.mode()[0]
         # **** 2 case = usually / max **** #
@@ -589,9 +693,9 @@ def prediction(pl):
 
         # **** Parameter Tuning **** #
         const = df[(df["operate_mode"] == 1) &
-                    (df.formular_code == job_code)]
+                   (df.formular_code == job_code)]
 
-        # CASE: CALCULATE K VALUE OF STEAM RATIO           
+        # CASE: CALCULATE K VALUE OF STEAM RATIO
         if len(const):
             # **** K value of steam ration **** #
             k_steam = round((const.steam_kg_ton_target -
